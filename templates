@@ -1,0 +1,205 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Chat</title>
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; margin:0; height:100vh; display:flex; }
+    #sidebar { width:220px; border-right:1px solid #ddd; padding:10px; box-sizing:border-box; }
+    #main { flex:1; display:flex; flex-direction:column; }
+    #messages { flex:1; padding:10px; overflow:auto; background:#fafafa; }
+    #composer { padding:10px; display:flex; gap:8px; align-items:center; border-top:1px solid #ddd; }
+    #usersList { list-style:none; padding:0; margin:0; }
+    #usersList li { padding:6px; cursor:pointer; border-radius:4px; }
+    #usersList li.selected { background:#e6f0ff; }
+    .msg { margin-bottom:10px; }
+    .msg b { margin-right:6px; }
+    audio { vertical-align:middle; }
+  </style>
+</head>
+<body>
+  <div id="sidebar">
+    <div><strong>Logged in as:</strong><br>{{ username }}</div>
+    <hr/>
+    <div><strong>Contacts</strong></div>
+    <ul id="usersList"></ul>
+    <hr/>
+    <div><a href="{{ url_for('logout') }}">Logout</a></div>
+  </div>
+
+  <div id="main">
+    <div id="messages"></div>
+
+    <div id="composer">
+      <input type="text" id="textMessage" placeholder="Type a message..." style="flex:1" />
+      <input type="file" id="imageInput" accept="image/*" />
+      <button id="sendBtn">Send</button>
+
+      <!-- voice controls -->
+      <button id="recordBtn">🎙️ Record</button>
+      <button id="stopBtn" disabled>⏹ Stop</button>
+    </div>
+  </div>
+
+<script>
+const username = "{{ username }}";
+const users = {{ users|tojson }};
+
+let selectedUser = users[0] === username && users.length>1 ? users[1] : users[0];
+const socket = io();
+
+// UI references
+const usersList = document.getElementById('usersList');
+const messagesDiv = document.getElementById('messages');
+const sendBtn = document.getElementById('sendBtn');
+const textMessage = document.getElementById('textMessage');
+const imageInput = document.getElementById('imageInput');
+const recordBtn = document.getElementById('recordBtn');
+const stopBtn = document.getElementById('stopBtn');
+
+function renderUsers(list) {
+  usersList.innerHTML = '';
+  list.forEach(u => {
+    if (u === username) return; // don't show self
+    const li = document.createElement('li');
+    li.textContent = u;
+    li.onclick = () => {
+      selectedUser = u;
+      Array.from(usersList.children).forEach(n => n.classList.remove('selected'));
+      li.classList.add('selected');
+    };
+    if (u === selectedUser) li.classList.add('selected');
+    usersList.appendChild(li);
+  });
+}
+
+// initial render (from template users list)
+renderUsers(users);
+
+// join room
+socket.emit('join', { username });
+
+// receive online users list
+socket.on('update_users', (list) => {
+  // list is array of usernames
+  renderUsers(list);
+});
+
+// receive chat history (array of messages) after join
+socket.on('chat_history', (history) => {
+  messagesDiv.innerHTML = '';
+  history.forEach(msg => {
+    addMessage(msg);
+  });
+  scrollBottom();
+});
+
+socket.on('private_message', (data) => {
+  addMessage(data);
+  scrollBottom();
+});
+
+function addMessage(data) {
+  const div = document.createElement('div');
+  div.className = 'msg';
+  const who = data.sender === username ? 'You' : data.sender;
+  let html = `<b>${who}:</b> ${data.message ? escapeHtml(data.message) : ''}`;
+
+  if (data.image_url) {
+    html += `<div><img src="${data.image_url}" style="max-width:200px;max-height:150px;display:block;margin-top:6px" /></div>`;
+  }
+  if (data.voice_url) {
+    html += `<div style="margin-top:6px"><audio controls src="${data.voice_url}"></audio></div>`;
+  }
+  div.innerHTML = html;
+  messagesDiv.appendChild(div);
+}
+
+function escapeHtml(text) {
+  if (!text) return '';
+  return text.replace(/[&<>"']/g, (m) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+}
+
+function scrollBottom() {
+  messagesDiv.scrollTop = messagesDiv.scrollHeight;
+}
+
+// send message (via fetch -> /send_message)
+sendBtn.onclick = async () => {
+  const msg = textMessage.value.trim();
+  const imgFile = imageInput.files[0];
+
+  const formData = new FormData();
+  formData.append('recipient', selectedUser);
+  formData.append('message', msg || '');
+  if (imgFile) formData.append('image', imgFile);
+
+  // ensure cookies are sent
+  await fetch('/send_message', {
+    method: 'POST',
+    body: formData,
+    credentials: 'same-origin'
+  });
+
+  // clear inputs
+  textMessage.value = '';
+  imageInput.value = '';
+};
+
+// ------------------ Voice recording ------------------
+let mediaRecorder;
+let audioChunks = [];
+
+recordBtn.onclick = async () => {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    mediaRecorder = new MediaRecorder(stream);
+    audioChunks = [];
+
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data && e.data.size) audioChunks.push(e.data);
+    };
+
+    mediaRecorder.onstop = async () => {
+      const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+      const file = new File([audioBlob], `voice_${Date.now()}.webm`, { type: 'audio/webm' });
+
+      const formData = new FormData();
+      formData.append('recipient', selectedUser);
+      formData.append('voice', file);
+
+      await fetch('/send_message', {
+        method: 'POST',
+        body: formData,
+        credentials: 'same-origin'
+      });
+    };
+
+    mediaRecorder.start();
+    recordBtn.disabled = true;
+    stopBtn.disabled = false;
+  } catch (err) {
+    alert('Microphone access is required for voice messages.');
+    console.error(err);
+  }
+};
+
+stopBtn.onclick = () => {
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    mediaRecorder.stop();
+  }
+  recordBtn.disabled = false;
+  stopBtn.disabled = true;
+};
+
+// helper: allow sending message by Enter
+textMessage.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendBtn.click();
+  }
+});
+</script>
+</body>
+</html>
