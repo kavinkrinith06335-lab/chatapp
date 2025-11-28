@@ -1,0 +1,20 @@
+SQLite format 3@  .c
+
+
+
+
+
+
+
+
+
+
+
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        sender TEXT,
+                        recipient TEXT,
+                        message TEXT,
+                        image TEXT,
+                        voice TEXT,
+                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)
+
